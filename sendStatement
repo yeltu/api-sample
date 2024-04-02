@@ -1,0 +1,171 @@
+import axios from 'axios';
+import CryptoJS from 'crypto-js';
+import schedule from 'node-schedule';
+import moment from 'moment-timezone';
+
+const USER_NAME  = "****";
+const PASSWORD = "****";
+const SESSION_KEY = CryptoJS.enc.Latin1.parse('4mjVmnwsQbkPk0La');
+const IV_KEY = CryptoJS.enc.Latin1.parse('34vBUL2EslZ5GZNP');
+const BASE_URL = 'https://openapi-uat.golomtbank.com/api';
+const LOGIN_URI = '/v1/auth/login';
+const STTMNT_URI = '/v1/account/operative/statement';
+const STTMNT_SERVICE = "OPERACCTSTA";
+
+const bodyLogin = {
+  "name": USER_NAME,
+  "password": PASSWORD
+}
+var token = "";
+var response = "";
+const headers = {
+  "X-Golomt-Checksum": "",
+  "X-Golomt-Service": "LGIN",
+  "Content-Type": "application/json",
+  "Authorization": `Bearer ${token}`,
+};
+
+const bodyStatement = {
+  "registerNo": "*****",
+  "accountId": "******",
+  "startDate": "",
+  "endDate": ""
+};
+
+const param = {
+  "client_id": null,
+  "state": null,
+  "scope": null
+}
+const getCurrDate = () => {
+  const currentDate = new Date().toISOString().split('T')[0];
+  return currentDate
+}
+
+const getOneDayBefore = () => {
+  let oneDayBefore = new Date();
+  oneDayBefore.setDate(oneDayBefore.getDate() - 1);
+  oneDayBefore = oneDayBefore.toISOString().split('T')[0]
+  return oneDayBefore
+}
+
+const getCurrDateTime = () => {
+  // const currentDate = new Date().toISOString();//.split('T')[0];
+  const region = 'Asia/Ulaanbaatar'; // For example, New York time zone
+  const currentTimeInRegion = moment.tz(region).format('YYYY-MM-DDTHH:mm:ss');
+  // console.log("Current datetime: ",currentTimeInRegion);
+  currentTimeInRegion.seconds(0);
+  return currentTimeInRegion;
+}
+
+const getFiveMinuteBefore = () => {
+  const region = 'Asia/Ulaanbaatar'; // For example, New York time zone
+  // Get the current date and time for the specified region
+  const currentTimeInRegion = moment.tz(region);
+  currentTimeInRegion.seconds(0);
+  const fiveMinuteBefore = currentTimeInRegion.subtract(5, 'minutes').format('YYYY-MM-DDTHH:mm:ss');
+  // console.log("Five minute before: ",fiveMinuteBefore);
+  return fiveMinuteBefore;
+}
+
+async function getSession(){
+  try {
+    const response = await axios.post(BASE_URL + LOGIN_URI, bodyLogin, { headers });
+    if(response.data?.token){
+      token = response.data.token;
+      // console.log("Token: ",token);
+      return await getStatement();
+    }
+  } catch (error) {
+      return error;
+  }
+};
+
+const getStatement = async()=>{
+  try {
+    var retMsg;
+    bodyStatement["startDate"] = getOneDayBefore();
+    bodyStatement["endDate"] = getCurrDate();
+    headers["X-Golomt-Service"] = STTMNT_SERVICE;
+    headers["Authorization"] = `Bearer ${token}`;
+    prepareCheckSumParam(bodyStatement);
+    
+    const resSttmnt = await axios.post(BASE_URL + STTMNT_URI, bodyStatement, { headers});
+    if(resSttmnt.data){
+      const decrypted = aesDecrypter(resSttmnt.data);
+      console.log("Decrypted text: ", decrypted);
+      var income = [];
+      let callBtseApi = false;
+      if (decrypted.statements) {
+        const object = decrypted.statements;
+        if (object.length > 0) {
+          for (const key in object) {
+            if (object[key]?.drOrCr == 'Credit' && object[key].tranPostedDate >= getFiveMinuteBefore() && object[key].tranPostedDate <= getCurrDateTime()) {
+              income.push({ "ReferenceId": object[key]?.tranDesc, "Amount": object[key]?.tranAmount });
+              callBtseApi = true;
+            }
+          }
+          console.log("Income: ", income);
+          if (callBtseApi && income.length > 0) {
+           retMsg = sendToBtse(income);
+          } else {
+            console.log("No deposits...");
+            retMsg = "No deposits...";
+          }
+        }
+      }
+    }
+    return retMsg;
+  }catch (error) {
+    console.log(error);
+    return aesDecrypter(error.data);
+  }
+};
+
+const prepareCheckSumParam = (param) => {
+  const hashHex = CryptoJS.SHA256(JSON.stringify(param)).toString(CryptoJS.enc.Hex);
+  const encrypted = CryptoJS.AES.encrypt(hashHex, SESSION_KEY, {
+    mode: CryptoJS.mode.CBC,
+    iv: IV_KEY,
+  });
+  headers['X-Golomt-Checksum'] = encrypted.toString();
+};
+
+const aesDecrypter = (response) => {
+  // console.log("Encrypted text:",response);
+  const encrypted = CryptoJS.enc.Base64.parse(response);
+  const decrypted = CryptoJS.AES.decrypt({ ciphertext: encrypted }, SESSION_KEY, {
+    mode: CryptoJS.mode.CBC,
+    iv: IV_KEY
+  });
+  const plain = decrypted.toString(CryptoJS.enc.Utf8);
+  const resp = JSON.parse(plain);
+  return resp;
+};
+
+const sendToBtse = async(sttmntBody)=>{
+  try{
+    const res = await axios.post("BTSE API", JSON.stringify(sttmntBody));
+    if(res.statusCode == 200){
+      console.log("Statement sent successfully, data: ", sttmntBody);
+      return "Data sent successfully";
+    }
+  }catch(error){
+      return error;
+  }
+}
+
+export const handler = async (event) => {
+  try{
+    const resp = await getSession();
+    response = {
+    statusCode: 200,
+    body:resp,
+   };
+  }catch(error){
+    return error;
+  }
+  return response;
+};
+
+
