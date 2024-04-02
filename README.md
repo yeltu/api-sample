@@ -1,4 +1,4 @@
-# api-sample
+# Altex API
 
 - Below code that sends statement data to BTSE
 - BTSE will create a new API and it will accept requests from Altex 
