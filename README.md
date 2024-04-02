@@ -7,4 +7,4 @@
 - We sent the data below then BTSE will auto-confirm the user's deposit request
 <img width="502" alt="image" src="https://github.com/yeltu/api-sample/assets/160451914/1367ac40-050b-4d9d-a188-1c9f04ca4bc9">
 
-If all requests are confirmed BTSE response success message to Altex
+ Description: If all requests are confirmed BTSE response success message to Altex
